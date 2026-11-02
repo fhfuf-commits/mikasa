@@ -1,6 +1,6 @@
 --[[
 ================================================================
-Cheems Hub - LocalScript v6.5
+Cheems Hub - LocalScript v6.5.1
 Location : StarterPlayer > StarterPlayerScripts
 ================================================================
 --]]
@@ -19,7 +19,7 @@ local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 -- ============================================================
 local CONFIG = {
 GuiName = "CheemsHubGui",
-Version = "6.5",
+Version = "6.5.1",
 ToggleKey = Enum.KeyCode.RightShift,
 WalkSpeed = { Min = 1, Max = 500, Default = 16 },
 Jump = { Min = 1, Max = 500, Default = 50 },
@@ -1201,15 +1201,13 @@ NotifyContainer.Position = UDim2.new(0, 0, 0, 60)
 NotifyContainer.Parent = screenGui
 
 -- ============================================================
--- AIM ASSIST (ADMIN-ONLY, PLAYER TARGETS, VISIBLE TARGETS ONLY)
--- Chỉ điều khiển camera của admin; không thay đổi vị trí/tốc độ người chơi khác.
+-- AIM ASSIST (PLAYER TARGETS, VISIBLE TARGETS ONLY)
+-- Điều khiển camera cục bộ; không thay đổi vị trí/tốc độ người chơi khác.
 -- ============================================================
 local AIM_CONFIG = {
     FOV = 160, -- bán kính vòng tròn, đơn vị pixel
     Strength = 3, -- 1 nhẹ -> 5 ghim rất chắc
     IgnoreTeam = true,
-    AdminUserIds = {}, -- thêm UserId admin nếu game không thuộc tài khoản cá nhân
-    AdminMinGroupRank = 200, -- chỉnh theo cấp bậc admin của group sở hữu game
     RetargetInterval = 0.07,
 }
 
@@ -1226,25 +1224,6 @@ local AimAssist = {
 }
 
 local AIM_RESPONSE = { 0.12, 0.25, 0.45, 0.72, 0.96 }
-
-local function isAimAdmin()
-    if not Authenticated then return false end
-    if game.CreatorType == Enum.CreatorType.User and LocalPlayer.UserId == game.CreatorId then
-        return true
-    end
-    if table.find(AIM_CONFIG.AdminUserIds, LocalPlayer.UserId) then
-        return true
-    end
-    if game.CreatorType == Enum.CreatorType.Group then
-        local ok, rank = pcall(function()
-            return LocalPlayer:GetRankInGroup(game.CreatorId)
-        end)
-        if ok and rank >= AIM_CONFIG.AdminMinGroupRank then
-            return true
-        end
-    end
-    return false
-end
 
 local function targetHasLineOfSight(camera, character, part)
     if not camera or not character or not part or not part.Parent then return false end
@@ -1371,11 +1350,6 @@ end
 
 function AimAssist:start()
     if self.enabled then return end
-    if not isAimAdmin() then
-        self.status = "Từ chối: tài khoản chưa được xác nhận là admin game"
-        notify("Aim chỉ dành cho chủ game/admin được cấp quyền", true)
-        return false
-    end
     self.enabled = true
     self.status = "Đang tìm mục tiêu trong FOV"
     self.target, self.aimPart = nil, nil
@@ -1479,7 +1453,7 @@ TitleLbl.BackgroundTransparency = 1
 TitleLbl.Font = Enum.Font.GothamBold; TitleLbl.TextSize = 14
 TitleLbl.TextColor3 = Color3.fromRGB(0, 200, 255)
 TitleLbl.TextXAlignment = Enum.TextXAlignment.Left
-TitleLbl.Text = "♊ HUB GEMINI <font color='#8090a8' size='11'>| v6.5</font>"
+TitleLbl.Text = "♊ HUB GEMINI <font color='#8090a8' size='11'>| v6.5.1</font>"
 TitleLbl.RichText = true; TitleLbl.Parent = TopBar
 local CloseBtn = Instance.new("TextButton")
 CloseBtn.Size = UDim2.new(0, 28, 0, 28); CloseBtn.Position = UDim2.new(1, -34, 0.5, -14)
@@ -1952,7 +1926,7 @@ else
 AutoLoot:stop()
 end
 end)
--- TAB 3: AIM (admin-only)
+-- TAB 3: AIM
 local pageAim = createPage("Aim", "🎯")
 local aimToggleRef
 local aimControls
@@ -1967,7 +1941,7 @@ aimStatusLbl.TextXAlignment = Enum.TextXAlignment.Left
 aimStatusLbl.Text = "Aim: Tắt"
 aimStatusLbl.Parent = pageAim
 
-aimToggleRef = addToggle(pageAim, "Bật Aim Assist (chỉ admin)", false, function(on)
+aimToggleRef = addToggle(pageAim, "Bật Aim Assist", false, function(on)
     if on then
         if AimAssist:start() then
             aimControls.Visible = true
@@ -2052,7 +2026,7 @@ AttackState.debug = on
 notify("Debug đánh: " .. (on and "BẬT" or "TẮT"))
 end)
 local infoCard = Instance.new("Frame")
-infoCard.Size = UDim2.new(1, -6, 0, 120); infoCard.BackgroundColor3 = Color3.fromRGB(24, 27, 38)
+infoCard.Size = UDim2.new(1, -6, 0, 142); infoCard.BackgroundColor3 = Color3.fromRGB(24, 27, 38)
 infoCard.BorderSizePixel = 0; infoCard.Parent = pageSettings
 Instance.new("UICorner", infoCard).CornerRadius = UDim.new(0, 6)
 local infoText = Instance.new("TextLabel")
@@ -2060,7 +2034,7 @@ infoText.Size = UDim2.new(1, -16, 1, -10); infoText.Position = UDim2.new(0, 8, 0
 infoText.BackgroundTransparency = 1; infoText.Font = Enum.Font.Gotham; infoText.TextSize = 11
 infoText.TextColor3 = Color3.fromRGB(160, 170, 190); infoText.TextXAlignment = Enum.TextXAlignment.Left
 infoText.TextYAlignment = Enum.TextYAlignment.Top
-infoText.Text = "• Nhấn [Right Shift] để ẩn/hiện menu.\n• Mobile: Bấm nút tròn ♊ để mở lại.\n• v6.5: Aim admin có FOV, kiểm tra tầm nhìn và chuyển cảnh mượt.\n• Chọn 'Tất cả' để farm mọi loại quái.\n• Aim admin: FOV + line-of-sight + ưu tiên người gần nhất.\n• Tài khoản cá nhân: chủ game; group game: rank tối thiểu 200 hoặc thêm UserId vào AIM_CONFIG.\n• Trạng thái đánh chỉ xác nhận thao tác đã gửi."
+infoText.Text = "• PHIÊN BẢN HIỆN TẠI: v6.5.1\n• Nhấn [Right Shift] để ẩn/hiện menu.\n• Mobile: Bấm nút tròn ♊ để mở lại.\n• Aim: FOV + kiểm tra tầm nhìn + ưu tiên người gần nhất.\n• Chọn 'Tất cả' để farm mọi loại quái.\n• Trạng thái đánh chỉ xác nhận thao tác đã gửi."
 infoText.Parent = infoCard
 -- Mở mặc định Tab Tự động bằng chuyển cảnh mượt
 switchPage("Tự động")
@@ -2164,7 +2138,7 @@ Authenticated = true
 KeyBox.Text = ""
 LoginStatus.Text = "Đăng nhập thành công"
 LoginStatus.TextColor3 = Color3.fromRGB(80, 220, 150)
-TitleLbl.Text = "♊ HUB GEMINI <font color='#f2c14e' size='11'>| PREMIUM</font> <font color='#8090a8' size='10'>v6.5</font>"
+TitleLbl.Text = "♊ HUB GEMINI <font color='#f2c14e' size='11'>| PREMIUM</font> <font color='#8090a8' size='10'>v6.5.1</font>"
 LoginFrame:Destroy()
 animateMain(true)
 notify("Đăng nhập Premium thành công", false)

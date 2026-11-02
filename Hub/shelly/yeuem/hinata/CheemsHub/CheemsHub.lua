@@ -1,6 +1,6 @@
 --[[
 ================================================================
-Cheems Hub - LocalScript v6.4
+Cheems Hub - LocalScript v6.5
 Location : StarterPlayer > StarterPlayerScripts
 ================================================================
 --]]
@@ -19,7 +19,7 @@ local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 -- ============================================================
 local CONFIG = {
 GuiName = "CheemsHubGui",
-Version = "6.4",
+Version = "6.5",
 ToggleKey = Enum.KeyCode.RightShift,
 WalkSpeed = { Min = 1, Max = 500, Default = 16 },
 Jump = { Min = 1, Max = 500, Default = 50 },
@@ -74,6 +74,7 @@ end
 -- HỆ THỐNG THÔNG BÁO (NOTIFY)
 -- ============================================================
 local NotifyContainer = nil
+local Authenticated = false
 local speedToggleRef, jumpToggleRef
 local function notify(text, isError)
 if not NotifyContainer or not NotifyContainer.Parent then return end
@@ -1198,6 +1199,254 @@ NotifyContainer.BackgroundTransparency = 1
 NotifyContainer.Size = UDim2.new(1, 0, 0, 300)
 NotifyContainer.Position = UDim2.new(0, 0, 0, 60)
 NotifyContainer.Parent = screenGui
+
+-- ============================================================
+-- AIM ASSIST (ADMIN-ONLY, PLAYER TARGETS, VISIBLE TARGETS ONLY)
+-- Chỉ điều khiển camera của admin; không thay đổi vị trí/tốc độ người chơi khác.
+-- ============================================================
+local AIM_CONFIG = {
+    FOV = 160, -- bán kính vòng tròn, đơn vị pixel
+    Strength = 3, -- 1 nhẹ -> 5 ghim rất chắc
+    IgnoreTeam = true,
+    AdminUserIds = {}, -- thêm UserId admin nếu game không thuộc tài khoản cá nhân
+    AdminMinGroupRank = 200, -- chỉnh theo cấp bậc admin của group sở hữu game
+    RetargetInterval = 0.07,
+}
+
+local AimAssist = {
+    enabled = false,
+    target = nil,
+    aimPart = nil,
+    connection = nil,
+    nextRetarget = 0,
+    status = "Tắt",
+    circle = nil,
+    circleStroke = nil,
+    pulseTween = nil,
+}
+
+local AIM_RESPONSE = { 0.12, 0.25, 0.45, 0.72, 0.96 }
+
+local function isAimAdmin()
+    if not Authenticated then return false end
+    if game.CreatorType == Enum.CreatorType.User and LocalPlayer.UserId == game.CreatorId then
+        return true
+    end
+    if table.find(AIM_CONFIG.AdminUserIds, LocalPlayer.UserId) then
+        return true
+    end
+    if game.CreatorType == Enum.CreatorType.Group then
+        local ok, rank = pcall(function()
+            return LocalPlayer:GetRankInGroup(game.CreatorId)
+        end)
+        if ok and rank >= AIM_CONFIG.AdminMinGroupRank then
+            return true
+        end
+    end
+    return false
+end
+
+local function targetHasLineOfSight(camera, character, part)
+    if not camera or not character or not part or not part.Parent then return false end
+    local origin = camera.CFrame.Position
+    local direction = part.Position - origin
+    if direction.Magnitude <= 0.01 then return true end
+
+    local excluded = {}
+    if LocalPlayer.Character then table.insert(excluded, LocalPlayer.Character) end
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = excluded
+    params.IgnoreWater = true
+
+    -- Bỏ qua tối đa vài lớp vật thể gần như trong suốt (ví dụ hiệu ứng kính),
+    -- nhưng tường/vật cản bình thường vẫn chặn aim.
+    for _ = 1, 5 do
+        local hit = workspace:Raycast(origin, direction, params)
+        if not hit then return true end
+        if hit.Instance and hit.Instance:IsDescendantOf(character) then return true end
+        if hit.Instance and hit.Instance:IsA("BasePart") and hit.Instance.Transparency >= 0.95 then
+            table.insert(excluded, hit.Instance)
+            params.FilterDescendantsInstances = excluded
+        else
+            return false
+        end
+    end
+    return false
+end
+
+local function getVisibleAimPart(camera, character, viewportCenter)
+    local candidates = {}
+    for _, partName in ipairs({ "Head", "UpperTorso", "Torso", "HumanoidRootPart" }) do
+        local candidate = character:FindFirstChild(partName)
+        if candidate then table.insert(candidates, candidate) end
+    end
+    for _, part in ipairs(candidates) do
+        if part and part:IsA("BasePart") then
+            local screenPoint, onScreen = camera:WorldToViewportPoint(part.Position)
+            if onScreen and screenPoint.Z > 0 then
+                local offset = Vector2.new(screenPoint.X, screenPoint.Y) - viewportCenter
+                if offset.Magnitude <= AIM_CONFIG.FOV and targetHasLineOfSight(camera, character, part) then
+                    return part
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function findBestAimTarget()
+    local camera = workspace.CurrentCamera
+    local myRoot = getHRP()
+    if not camera or not myRoot then return nil, nil end
+
+    local viewport = camera.ViewportSize
+    local center = Vector2.new(viewport.X * 0.5, viewport.Y * 0.5)
+    local bestPlayer, bestPart, bestDistance = nil, nil, math.huge
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            local character = player.Character
+            local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+            local root = character and character:FindFirstChild("HumanoidRootPart")
+            local sameTeam = AIM_CONFIG.IgnoreTeam
+                and LocalPlayer.Team ~= nil and player.Team ~= nil
+                and player.Team == LocalPlayer.Team
+
+            if character and humanoid and humanoid.Health > 0 and root and not sameTeam then
+                local part = getVisibleAimPart(camera, character, center)
+                if part then
+                    local worldDistance = (root.Position - myRoot.Position).Magnitude
+                    -- Ưu tiên người chơi gần nhất trong FOV, không chọn người xa chỉ vì gần tâm hơn.
+                    if worldDistance < bestDistance then
+                        bestDistance = worldDistance
+                        bestPlayer = player
+                        bestPart = part
+                    end
+                end
+            end
+        end
+    end
+    return bestPlayer, bestPart
+end
+
+local function updateAimCircle()
+    if not AimAssist.circle then return end
+    local diameter = math.floor(AIM_CONFIG.FOV * 2)
+    AimAssist.circle.Size = UDim2.fromOffset(diameter, diameter)
+    local camera = workspace.CurrentCamera
+    if camera then
+        local viewport = camera.ViewportSize
+        AimAssist.circle.Position = UDim2.fromOffset(viewport.X * 0.5, viewport.Y * 0.5)
+    end
+end
+
+local aimCircle = Instance.new("Frame")
+aimCircle.Name = "AimFOVCircle"
+aimCircle.AnchorPoint = Vector2.new(0.5, 0.5)
+aimCircle.Position = UDim2.fromScale(0.5, 0.5)
+aimCircle.Size = UDim2.fromOffset(AIM_CONFIG.FOV * 2, AIM_CONFIG.FOV * 2)
+aimCircle.BackgroundTransparency = 1
+aimCircle.BorderSizePixel = 0
+aimCircle.Visible = false
+aimCircle.ZIndex = 4
+aimCircle.Parent = screenGui
+Instance.new("UICorner", aimCircle).CornerRadius = UDim.new(1, 0)
+local aimCircleStroke = Instance.new("UIStroke")
+aimCircleStroke.Color = Color3.fromRGB(0, 205, 255)
+aimCircleStroke.Thickness = 1.5
+aimCircleStroke.Transparency = 0.12
+aimCircleStroke.Parent = aimCircle
+AimAssist.circle = aimCircle
+AimAssist.circleStroke = aimCircleStroke
+
+function AimAssist:setFOV(value)
+    AIM_CONFIG.FOV = clamp(tonumber(value) or AIM_CONFIG.FOV, 40, 500)
+    updateAimCircle()
+end
+
+function AimAssist:setStrength(value)
+    AIM_CONFIG.Strength = math.floor(clamp(tonumber(value) or AIM_CONFIG.Strength, 1, 5) + 0.5)
+end
+
+function AimAssist:start()
+    if self.enabled then return end
+    if not isAimAdmin() then
+        self.status = "Từ chối: tài khoản chưa được xác nhận là admin game"
+        notify("Aim chỉ dành cho chủ game/admin được cấp quyền", true)
+        return false
+    end
+    self.enabled = true
+    self.status = "Đang tìm mục tiêu trong FOV"
+    self.target, self.aimPart = nil, nil
+    self.nextRetarget = 0
+    self.circle.Visible = true
+    updateAimCircle()
+    if self.circleStroke then
+        self.pulseTween = TweenService:Create(
+            self.circleStroke,
+            TweenInfo.new(0.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+            { Transparency = 0.42, Thickness = 2.1 }
+        )
+        self.pulseTween:Play()
+    end
+
+    self.connection = RunService.RenderStepped:Connect(function(dt)
+        if not self.enabled then return end
+        local camera = workspace.CurrentCamera
+        if not camera then
+            self.target, self.aimPart = nil, nil
+            self.status = "Không tìm thấy camera"
+            return
+        end
+
+        local now = os.clock()
+        if now >= self.nextRetarget then
+            self.target, self.aimPart = findBestAimTarget()
+            self.nextRetarget = now + AIM_CONFIG.RetargetInterval
+            if self.target then
+                self.status = "Đang khóa: " .. self.target.DisplayName
+            else
+                self.status = "Không có mục tiêu nhìn thấy trong vòng FOV"
+            end
+        end
+
+        local target = self.target
+        local part = self.aimPart
+        local character = target and target.Character
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+        if target and part and part.Parent and humanoid and humanoid.Health > 0 then
+            local desired = CFrame.lookAt(camera.CFrame.Position, part.Position)
+            local strength = AIM_RESPONSE[AIM_CONFIG.Strength] or AIM_RESPONSE[3]
+            local frameAlpha = 1 - ((1 - strength) ^ math.clamp(dt * 60, 0, 3))
+            camera.CFrame = camera.CFrame:Lerp(desired, frameAlpha)
+        else
+            self.target, self.aimPart = nil, nil
+        end
+        updateAimCircle()
+    end)
+    return true
+end
+
+function AimAssist:stop()
+    self.enabled = false
+    self.target, self.aimPart = nil, nil
+    self.status = "Tắt"
+    if self.connection then
+        self.connection:Disconnect()
+        self.connection = nil
+    end
+    if self.pulseTween then
+        self.pulseTween:Cancel()
+        self.pulseTween = nil
+    end
+    if self.circleStroke then
+        self.circleStroke.Transparency = 0.12
+        self.circleStroke.Thickness = 1.5
+    end
+    if self.circle then self.circle.Visible = false end
+end
+
 local MainFrame = Instance.new("Frame")
 MainFrame.Name = "MainFrame"
 local mainCamera = workspace.CurrentCamera
@@ -1210,6 +1459,9 @@ MainFrame.BackgroundColor3 = Color3.fromRGB(18, 20, 28)
 MainFrame.BorderSizePixel = 0
 MainFrame.ClipsDescendants = true
 MainFrame.Parent = screenGui
+local MainScale = Instance.new("UIScale")
+MainScale.Scale = 1
+MainScale.Parent = MainFrame
 MainFrame.Visible = false
 Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
 local MainStroke = Instance.new("UIStroke")
@@ -1227,7 +1479,7 @@ TitleLbl.BackgroundTransparency = 1
 TitleLbl.Font = Enum.Font.GothamBold; TitleLbl.TextSize = 14
 TitleLbl.TextColor3 = Color3.fromRGB(0, 200, 255)
 TitleLbl.TextXAlignment = Enum.TextXAlignment.Left
-TitleLbl.Text = "♊ HUB GEMINI <font color='#8090a8' size='11'>| v6.4</font>"
+TitleLbl.Text = "♊ HUB GEMINI <font color='#8090a8' size='11'>| v6.5</font>"
 TitleLbl.RichText = true; TitleLbl.Parent = TopBar
 local CloseBtn = Instance.new("TextButton")
 CloseBtn.Size = UDim2.new(0, 28, 0, 28); CloseBtn.Position = UDim2.new(1, -34, 0.5, -14)
@@ -1242,7 +1494,6 @@ MinBtn.Text = "–"; MinBtn.TextColor3 = Color3.new(1, 1, 1)
 MinBtn.Font = Enum.Font.GothamBold; MinBtn.TextSize = 14
 MinBtn.Parent = TopBar; Instance.new("UICorner", MinBtn).CornerRadius = UDim.new(0, 6)
 -- Kéo thả: giới hạn trong màn hình và dọn kết nối toàn cục khi GUI bị đóng.
-local Authenticated = false
 local uiConnections = {}
 local function trackUIConnection(conn)
 table.insert(uiConnections, conn)
@@ -1287,9 +1538,32 @@ FloatBtn.Visible = false; FloatBtn.Parent = screenGui
 Instance.new("UICorner", FloatBtn).CornerRadius = UDim.new(0, 12)
 local FloatStroke = Instance.new("UIStroke"); FloatStroke.Color = Color3.fromRGB(0, 180, 255); FloatStroke.Parent = FloatBtn
 setupDraggable(FloatBtn, FloatBtn)
-CloseBtn.MouseButton1Click:Connect(function() MainFrame.Visible = false; FloatBtn.Visible = true end)
-MinBtn.MouseButton1Click:Connect(function() MainFrame.Visible = false; FloatBtn.Visible = true end)
-FloatBtn.MouseButton1Click:Connect(function() if Authenticated then MainFrame.Visible = true; FloatBtn.Visible = false end end)
+local mainTransitionId = 0
+local mainStateOpen = false
+local function animateMain(open)
+    if not Authenticated then return end
+    mainTransitionId += 1
+    local transitionId = mainTransitionId
+    mainStateOpen = open
+    if open then
+        FloatBtn.Visible = false
+        MainFrame.Visible = true
+        MainScale.Scale = 0.94
+        TweenService:Create(MainScale, TweenInfo.new(0.22, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { Scale = 1 }):Play()
+    else
+        MainScale.Scale = 1
+        TweenService:Create(MainScale, TweenInfo.new(0.16, Enum.EasingStyle.Quint, Enum.EasingDirection.In), { Scale = 0.94 }):Play()
+        task.delay(0.17, function()
+            if transitionId ~= mainTransitionId then return end
+            MainFrame.Visible = false
+            MainScale.Scale = 1
+            FloatBtn.Visible = true
+        end)
+    end
+end
+CloseBtn.MouseButton1Click:Connect(function() animateMain(false) end)
+MinBtn.MouseButton1Click:Connect(function() animateMain(false) end)
+FloatBtn.MouseButton1Click:Connect(function() animateMain(true) end)
 -- Sidebar Tabs
 local Sidebar = Instance.new("Frame")
 Sidebar.Size = UDim2.new(0, 126, 1, -42); Sidebar.Position = UDim2.new(0, 0, 0, 42)
@@ -1303,14 +1577,55 @@ local PageContainer = Instance.new("Frame")
 PageContainer.Size = UDim2.new(1, -134, 1, -50); PageContainer.Position = UDim2.new(0, 130, 0, 46)
 PageContainer.BackgroundTransparency = 1; PageContainer.Parent = MainFrame
 local Pages = {}
+local PageGroups = {}
 local TabButtons = {}
+local PageTweens = {}
+local activePageName = nil
+local function switchPage(name)
+    if not Pages[name] or activePageName == name then return end
+    activePageName = name
+    for pageName, page in pairs(Pages) do
+        local active = pageName == name
+        local group = PageGroups[pageName]
+        local button = TabButtons[pageName]
+        button.BackgroundColor3 = active and Color3.fromRGB(0, 140, 220) or Color3.fromRGB(26, 30, 42)
+        button.TextColor3 = active and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(150, 160, 180)
+        if PageTweens[pageName] then
+            PageTweens[pageName]:Cancel()
+            PageTweens[pageName] = nil
+        end
+        if active then
+            group.Visible = true
+            group.Position = UDim2.fromOffset(10, 0)
+            group.GroupTransparency = 1
+            PageTweens[pageName] = TweenService:Create(group, TweenInfo.new(0.2, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+                Position = UDim2.fromOffset(0, 0), GroupTransparency = 0
+            })
+            PageTweens[pageName]:Play()
+        else
+            group.Visible = false
+            group.GroupTransparency = 0
+            group.Position = UDim2.fromOffset(0, 0)
+        end
+    end
+end
+
 local function createPage(name, icon)
+local group = Instance.new("CanvasGroup")
+group.Name = name .. "TransitionGroup"
+group.Size = UDim2.new(1, 0, 1, 0)
+group.Position = UDim2.fromOffset(0, 0)
+group.BackgroundTransparency = 1
+group.GroupTransparency = 0
+group.Visible = false
+group.Parent = PageContainer
+
 local page = Instance.new("ScrollingFrame")
 page.Name = name .. "Page"
 page.Size = UDim2.new(1, 0, 1, 0); page.BackgroundTransparency = 1
 page.ScrollBarThickness = 3; page.ScrollBarImageColor3 = Color3.fromRGB(0, 180, 255)
-page.CanvasSize = UDim2.new(0, 0, 0, 0); page.Visible = false
-page.Parent = PageContainer
+page.CanvasSize = UDim2.new(0, 0, 0, 0); page.Visible = true
+page.Parent = group
 local pageLayout = Instance.new("UIListLayout")
 pageLayout.Padding = UDim.new(0, 8); pageLayout.Parent = page
 pageLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
@@ -1321,16 +1636,20 @@ tabBtn.Size = UDim2.new(1, 0, 0, 34); tabBtn.BackgroundColor3 = Color3.fromRGB(2
 tabBtn.BorderSizePixel = 0; tabBtn.Font = Enum.Font.GothamMedium; tabBtn.TextSize = 12
 tabBtn.TextColor3 = Color3.fromRGB(150, 160, 180); tabBtn.Text = icon .. " " .. name
 tabBtn.Parent = Sidebar; Instance.new("UICorner", tabBtn).CornerRadius = UDim.new(0, 6)
-Pages[name] = page
-TabButtons[name] = tabBtn
-tabBtn.MouseButton1Click:Connect(function()
-for pName, pFrame in pairs(Pages) do
-local isCurrent = (pName == name)
-pFrame.Visible = isCurrent
-TabButtons[pName].BackgroundColor3 = isCurrent and Color3.fromRGB(0, 140, 220) or Color3.fromRGB(26, 30, 42)
-TabButtons[pName].TextColor3 = isCurrent and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(150, 160, 180)
-end
+tabBtn.MouseEnter:Connect(function()
+    if activePageName ~= name then
+        TweenService:Create(tabBtn, TweenInfo.new(0.12), { BackgroundColor3 = Color3.fromRGB(38, 48, 66) }):Play()
+    end
 end)
+tabBtn.MouseLeave:Connect(function()
+    if activePageName ~= name then
+        TweenService:Create(tabBtn, TweenInfo.new(0.12), { BackgroundColor3 = Color3.fromRGB(26, 30, 42) }):Play()
+    end
+end)
+Pages[name] = page
+PageGroups[name] = group
+TabButtons[name] = tabBtn
+tabBtn.MouseButton1Click:Connect(function() switchPage(name) end)
 return page
 end
 -- ============================================================
@@ -1633,7 +1952,73 @@ else
 AutoLoot:stop()
 end
 end)
--- TAB 3: HIỂN THỊ
+-- TAB 3: AIM (admin-only)
+local pageAim = createPage("Aim", "🎯")
+local aimToggleRef
+local aimControls
+local aimStatusLbl = Instance.new("TextLabel")
+aimStatusLbl.Size = UDim2.new(1, -6, 0, 32)
+aimStatusLbl.BackgroundTransparency = 1
+aimStatusLbl.Font = Enum.Font.GothamMedium
+aimStatusLbl.TextSize = 11
+aimStatusLbl.TextWrapped = true
+aimStatusLbl.TextColor3 = Color3.fromRGB(0, 200, 255)
+aimStatusLbl.TextXAlignment = Enum.TextXAlignment.Left
+aimStatusLbl.Text = "Aim: Tắt"
+aimStatusLbl.Parent = pageAim
+
+aimToggleRef = addToggle(pageAim, "Bật Aim Assist (chỉ admin)", false, function(on)
+    if on then
+        if AimAssist:start() then
+            aimControls.Visible = true
+        else
+            aimToggleRef.set(false)
+            aimControls.Visible = false
+        end
+    else
+        AimAssist:stop()
+        aimControls.Visible = false
+    end
+end)
+
+aimControls = Instance.new("Frame")
+aimControls.Name = "AimAdvancedSettings"
+aimControls.Size = UDim2.new(1, -6, 0, 0)
+aimControls.AutomaticSize = Enum.AutomaticSize.Y
+aimControls.BackgroundTransparency = 1
+aimControls.Visible = false
+aimControls.Parent = pageAim
+local aimControlsLayout = Instance.new("UIListLayout")
+aimControlsLayout.Padding = UDim.new(0, 7)
+aimControlsLayout.SortOrder = Enum.SortOrder.LayoutOrder
+aimControlsLayout.Parent = aimControls
+
+addSlider(aimControls, "Bán kính vòng FOV (px)", 40, 500, AIM_CONFIG.FOV, function(v)
+    AimAssist:setFOV(v)
+end)
+addSlider(aimControls, "Lực ghim (1 nhẹ - 5 rất mạnh)", 1, 5, AIM_CONFIG.Strength, function(v)
+    AimAssist:setStrength(v)
+    local descriptions = { "Nhẹ", "Vừa nhẹ", "Cân bằng", "Mạnh", "Rất mạnh" }
+    notify("Lực ghim: " .. descriptions[AIM_CONFIG.Strength])
+end)
+addToggle(aimControls, "Bỏ qua đồng đội", AIM_CONFIG.IgnoreTeam, function(on)
+    AIM_CONFIG.IgnoreTeam = on
+end)
+local aimInfo = Instance.new("TextLabel")
+aimInfo.Size = UDim2.new(1, -6, 0, 58)
+aimInfo.BackgroundColor3 = Color3.fromRGB(24, 27, 38)
+aimInfo.BackgroundTransparency = 0.1
+aimInfo.BorderSizePixel = 0
+aimInfo.Font = Enum.Font.Gotham
+aimInfo.TextSize = 10
+aimInfo.TextWrapped = true
+aimInfo.TextYAlignment = Enum.TextYAlignment.Center
+aimInfo.TextColor3 = Color3.fromRGB(160, 175, 195)
+aimInfo.Text = "Chỉ chọn người chơi đang hiện trong vòng FOV và có đường nhìn rõ. Ưu tiên mục tiêu gần nhất; tường/vật cản sẽ chặn khóa. Mức 5 ghim camera rất chắc nhưng không khóa chuyển động nhân vật."
+aimInfo.Parent = aimControls
+Instance.new("UICorner", aimInfo).CornerRadius = UDim.new(0, 6)
+
+-- TAB 4: HIỂN THỊ
 local pageVisual = createPage("Hiển thị", "👁️")
 local fullBrightToggleRef
 local fixLagToggleRef
@@ -1660,7 +2045,7 @@ addToggle(pageVisual, "ESP - Chỉ khác đội", CONFIG.ESP.SameTeamOnly, funct
 CONFIG.ESP.SameTeamOnly = on
 if ESP.enabled then ESP:stop(); ESP:start() end
 end)
--- TAB 4: CÀI ĐẶT
+-- TAB 5: CÀI ĐẶT
 local pageSettings = createPage("Cài đặt", "⚙️")
 addToggle(pageSettings, "Debug đánh (F9 Console)", false, function(on)
 AttackState.debug = on
@@ -1675,12 +2060,10 @@ infoText.Size = UDim2.new(1, -16, 1, -10); infoText.Position = UDim2.new(0, 8, 0
 infoText.BackgroundTransparency = 1; infoText.Font = Enum.Font.Gotham; infoText.TextSize = 11
 infoText.TextColor3 = Color3.fromRGB(160, 170, 190); infoText.TextXAlignment = Enum.TextXAlignment.Left
 infoText.TextYAlignment = Enum.TextYAlignment.Top
-infoText.Text = "• Nhấn [Right Shift] để ẩn/hiện menu.\n• Mobile: Bấm nút tròn ♊ để mở lại.\n• v6.4: quét quái/vật phẩm lồng nhiều cấp.\n• Chọn 'Tất cả' để farm mọi loại quái.\n• Trạng thái đánh chỉ xác nhận thao tác đã gửi."
+infoText.Text = "• Nhấn [Right Shift] để ẩn/hiện menu.\n• Mobile: Bấm nút tròn ♊ để mở lại.\n• v6.5: Aim admin có FOV, kiểm tra tầm nhìn và chuyển cảnh mượt.\n• Chọn 'Tất cả' để farm mọi loại quái.\n• Aim admin: FOV + line-of-sight + ưu tiên người gần nhất.\n• Tài khoản cá nhân: chủ game; group game: rank tối thiểu 200 hoặc thêm UserId vào AIM_CONFIG.\n• Trạng thái đánh chỉ xác nhận thao tác đã gửi."
 infoText.Parent = infoCard
--- Mở mặc định Tab Tự động
-TabButtons["Tự động"].BackgroundColor3 = Color3.fromRGB(0, 140, 220)
-TabButtons["Tự động"].TextColor3 = Color3.fromRGB(255, 255, 255)
-Pages["Tự động"].Visible = true
+-- Mở mặc định Tab Tự động bằng chuyển cảnh mượt
+switchPage("Tự động")
 -- ============================================================
 -- ĐĂNG NHẬP PREMIUM (KEY TẠM THỜI)
 -- Lưu ý: key nhúng trong LocalScript chỉ khóa giao diện; không phải xác thực an toàn.
@@ -1700,6 +2083,10 @@ LoginFrame.BackgroundColor3 = Color3.fromRGB(20, 23, 34)
 LoginFrame.BorderSizePixel = 0
 LoginFrame.ZIndex = 100
 LoginFrame.Parent = screenGui
+local LoginScale = Instance.new("UIScale")
+LoginScale.Scale = 0.92
+LoginScale.Parent = LoginFrame
+TweenService:Create(LoginScale, TweenInfo.new(0.28, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = 1 }):Play()
 Instance.new("UICorner", LoginFrame).CornerRadius = UDim.new(0, 14)
 local LoginStroke = Instance.new("UIStroke")
 LoginStroke.Color = Color3.fromRGB(0, 175, 230)
@@ -1777,9 +2164,9 @@ Authenticated = true
 KeyBox.Text = ""
 LoginStatus.Text = "Đăng nhập thành công"
 LoginStatus.TextColor3 = Color3.fromRGB(80, 220, 150)
-TitleLbl.Text = "♊ HUB GEMINI <font color='#f2c14e' size='11'>| PREMIUM</font> <font color='#8090a8' size='10'>v6.4</font>"
+TitleLbl.Text = "♊ HUB GEMINI <font color='#f2c14e' size='11'>| PREMIUM</font> <font color='#8090a8' size='10'>v6.5</font>"
 LoginFrame:Destroy()
-MainFrame.Visible = true
+animateMain(true)
 notify("Đăng nhập Premium thành công", false)
 else
 loginAttempts += 1
@@ -1799,6 +2186,7 @@ task.spawn(function()
 while screenGui.Parent do
 farmStatusLbl.Text = "Trạng thái Farm: " .. (AutoFarm.enabled and AutoFarm.status or "Tắt")
 lootStatusLbl.Text = "Trạng thái Loot: " .. (AutoLoot.enabled and AutoLoot.status or "Tắt")
+aimStatusLbl.Text = "Aim: " .. (AimAssist.enabled and AimAssist.status or "Tắt")
 task.wait(0.25)
 end
 end)
@@ -1806,8 +2194,7 @@ end)
 trackUIConnection(UserInputService.InputBegan:Connect(function(input, gp)
 if gp or not Authenticated then return end
 if input.KeyCode == CONFIG.ToggleKey then
-MainFrame.Visible = not MainFrame.Visible
-FloatBtn.Visible = not MainFrame.Visible
+animateMain(not mainStateOpen)
 end
 end))
 -- Dọn dẹp an toàn khi GUI bị xoá
@@ -1815,6 +2202,7 @@ screenGui.Destroying:Connect(function()
 SpeedWalk:stop(); HighJump:stop()
 AutoFarm:stop(); AutoLoot:stop()
 ESP:stop(); FixLag:stop(); FullBright:stop()
+AimAssist:stop()
 NoclipManager:forceStop()
 for _, c in ipairs(uiConnections) do
 pcall(function() c:Disconnect() end)

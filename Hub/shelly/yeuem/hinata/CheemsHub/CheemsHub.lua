@@ -1,6 +1,6 @@
 --[[
 ================================================================
-Cheems Hub - LocalScript v6.5.1
+Cheems Hub - LocalScript v6.5.2
 Location : StarterPlayer > StarterPlayerScripts
 ================================================================
 --]]
@@ -19,7 +19,7 @@ local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 -- ============================================================
 local CONFIG = {
 GuiName = "CheemsHubGui",
-Version = "6.5.1",
+Version = "6.5.2",
 ToggleKey = Enum.KeyCode.RightShift,
 WalkSpeed = { Min = 1, Max = 500, Default = 16 },
 Jump = { Min = 1, Max = 500, Default = 50 },
@@ -1056,12 +1056,41 @@ end
 -- ESP
 -- ============================================================
 local ESP = { enabled = false, entries = {}, loopConn = nil, playerConns = {}, playerBindings = {} }
+local espPlayerCountLabel, espBotCountLabel
 local function clearEspEntry(plr)
 local e = ESP.entries[plr]; if not e then return end
 if e.highlight then e.highlight:Destroy() end
 if e.billboard then e.billboard:Destroy() end
 for _, c in ipairs(e.conns) do c:Disconnect() end
 ESP.entries[plr] = nil
+end
+
+local function countLivingBots()
+    local seen = {}
+    for _, inst in ipairs(workspace:GetDescendants()) do
+        if inst:IsA("Humanoid") and inst.Health > 0 then
+            local model = inst.Parent
+            if model and not model:IsA("Model") then
+                model = inst:FindFirstAncestorOfClass("Model")
+            end
+            if model and model:IsA("Model") and not Players:GetPlayerFromCharacter(model) then
+                local root = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
+                if root and root:IsA("BasePart") then seen[model] = true end
+            end
+        end
+    end
+    local count = 0
+    for _ in pairs(seen) do count += 1 end
+    return count
+end
+
+function ESP:updateCounterHud()
+    if not self.counterHud then return end
+    self.counterHud.Visible = self.enabled
+    if not self.enabled then return end
+    -- PLAYERS tính cả người đang xem; BOTS là Model NPC sống có Humanoid + root.
+    espPlayerCountLabel.Text = string.format("PLAYERS  %02d", #Players:GetPlayers())
+    espBotCountLabel.Text = string.format("BOTS  %02d", countLivingBots())
 end
 local function refreshEspFor(plr)
 if plr == LocalPlayer then return end
@@ -1149,6 +1178,8 @@ end
 function ESP:start()
 if self.enabled then return end
 self.enabled = true
+if self.counterHud then self.counterHud.Visible = true end
+self:updateCounterHud()
 for _, plr in ipairs(Players:GetPlayers()) do bindEspPlayer(plr) end
 table.insert(self.playerConns, Players.PlayerAdded:Connect(bindEspPlayer))
 table.insert(self.playerConns, Players.PlayerRemoving:Connect(function(plr)
@@ -1169,12 +1200,18 @@ self._last = self._last or 0
 if os.clock() - self._last < CONFIG.ESP.UpdateInterval then return end
 self._last = os.clock()
 espDistanceLoop()
+self.counterLast = self.counterLast or 0
+if os.clock() - self.counterLast >= 1 then
+    self.counterLast = os.clock()
+    self:updateCounterHud()
+end
 end)
 end
 
 function ESP:stop()
 if not self.enabled then return end
 self.enabled = false
+if self.counterHud then self.counterHud.Visible = false end
 if self.loopConn then self.loopConn:Disconnect(); self.loopConn = nil end
 for _, c in ipairs(self.playerConns) do c:Disconnect() end
 self.playerConns = {}
@@ -1200,30 +1237,86 @@ NotifyContainer.Size = UDim2.new(1, 0, 0, 300)
 NotifyContainer.Position = UDim2.new(0, 0, 0, 60)
 NotifyContainer.Parent = screenGui
 
+-- HUD đếm người chơi và NPC/Bot, chỉ hiện khi Player ESP bật.
+local espCounterHud = Instance.new("Frame")
+espCounterHud.Name = "ESPPlayerBotCounter"
+espCounterHud.AnchorPoint = Vector2.new(0.5, 0)
+espCounterHud.Position = UDim2.new(0.5, 0, 0, 8)
+espCounterHud.Size = UDim2.fromOffset(330, 34)
+espCounterHud.BackgroundColor3 = Color3.fromRGB(15, 19, 29)
+espCounterHud.BackgroundTransparency = 0.16
+espCounterHud.BorderSizePixel = 0
+espCounterHud.Visible = false
+espCounterHud.ZIndex = 20
+espCounterHud.Parent = screenGui
+Instance.new("UICorner", espCounterHud).CornerRadius = UDim.new(0, 9)
+local espCounterStroke = Instance.new("UIStroke")
+espCounterStroke.Color = Color3.fromRGB(65, 105, 145)
+espCounterStroke.Transparency = 0.25
+espCounterStroke.Parent = espCounterHud
+espPlayerCountLabel = Instance.new("TextLabel")
+espPlayerCountLabel.BackgroundTransparency = 1
+espPlayerCountLabel.Position = UDim2.new(0, 8, 0, 0)
+espPlayerCountLabel.Size = UDim2.new(0.5, -10, 1, 0)
+espPlayerCountLabel.Font = Enum.Font.GothamBold
+espPlayerCountLabel.TextSize = 12
+espPlayerCountLabel.TextColor3 = Color3.fromRGB(85, 205, 255)
+espPlayerCountLabel.TextXAlignment = Enum.TextXAlignment.Center
+espPlayerCountLabel.Text = "PLAYERS  0"
+espPlayerCountLabel.ZIndex = 21
+espPlayerCountLabel.Parent = espCounterHud
+espBotCountLabel = Instance.new("TextLabel")
+espBotCountLabel.BackgroundTransparency = 1
+espBotCountLabel.Position = UDim2.new(0.5, 2, 0, 0)
+espBotCountLabel.Size = UDim2.new(0.5, -10, 1, 0)
+espBotCountLabel.Font = Enum.Font.GothamBold
+espBotCountLabel.TextSize = 12
+espBotCountLabel.TextColor3 = Color3.fromRGB(255, 185, 85)
+espBotCountLabel.TextXAlignment = Enum.TextXAlignment.Center
+espBotCountLabel.Text = "BOTS  0"
+espBotCountLabel.ZIndex = 21
+espBotCountLabel.Parent = espCounterHud
+ESP.counterHud = espCounterHud
+
 -- ============================================================
 -- AIM ASSIST (PLAYER TARGETS, VISIBLE TARGETS ONLY)
 -- Điều khiển camera cục bộ; không thay đổi vị trí/tốc độ người chơi khác.
 -- ============================================================
 local AIM_CONFIG = {
-    FOV = 160, -- bán kính vòng tròn, đơn vị pixel
-    Strength = 3, -- 1 nhẹ -> 5 ghim rất chắc
+    FOV = 160,                  -- bán kính vòng tròn, đơn vị pixel
+    Strength = 3,               -- 1 rê tay dễ, 5 bám rất mạnh
     IgnoreTeam = true,
-    RetargetInterval = 0.07,
+    MaxDistance = 220,          -- khoảng cách tối đa theo studs
+    ShowTracers = true,
+    RetargetInterval = 0.12,
+    SwitchMargin = 0.18,        -- chỉ đổi mục tiêu nếu đối thủ mới gần hơn đáng kể
 }
 
 local AimAssist = {
     enabled = false,
     target = nil,
     aimPart = nil,
-    connection = nil,
     nextRetarget = 0,
     status = "Tắt",
     circle = nil,
     circleStroke = nil,
     pulseTween = nil,
+    tracerLayer = nil,
+    tracers = {},
+    tracerAccumulator = 0,
+    renderBindingName = "CheemsHubAimAssist_" .. tostring(LocalPlayer.UserId),
 }
 
-local AIM_RESPONSE = { 0.12, 0.25, 0.45, 0.72, 0.96 }
+-- Hệ số càng lớn thì camera càng bám sát tâm mục tiêu ở mỗi khung hình.
+-- Mức 1 vẫn cho phép rê chuột tương đối tự nhiên; mức 5 gần như khóa hướng ngắm.
+local AIM_RESPONSE = { 0.08, 0.18, 0.36, 0.68, 0.92 }
+
+local function isAimSameTeam(player)
+    return AIM_CONFIG.IgnoreTeam
+        and LocalPlayer.Team ~= nil
+        and player.Team ~= nil
+        and player.Team == LocalPlayer.Team
+end
 
 local function targetHasLineOfSight(camera, character, part)
     if not camera or not character or not part or not part.Parent then return false end
@@ -1238,8 +1331,7 @@ local function targetHasLineOfSight(camera, character, part)
     params.FilterDescendantsInstances = excluded
     params.IgnoreWater = true
 
-    -- Bỏ qua tối đa vài lớp vật thể gần như trong suốt (ví dụ hiệu ứng kính),
-    -- nhưng tường/vật cản bình thường vẫn chặn aim.
+    -- Bỏ qua tối đa 5 bề mặt gần như trong suốt; tường/vật cản đặc vẫn chặn aim.
     for _ = 1, 5 do
         local hit = workspace:Raycast(origin, direction, params)
         if not hit then return true end
@@ -1254,65 +1346,62 @@ local function targetHasLineOfSight(camera, character, part)
     return false
 end
 
+local function isAimPartInFOV(camera, character, part, viewportCenter)
+    if not camera or not character or not part or not part.Parent then return false end
+    local screenPoint, onScreen = camera:WorldToViewportPoint(part.Position)
+    if not onScreen or screenPoint.Z <= 0 then return false end
+    local offset = Vector2.new(screenPoint.X, screenPoint.Y) - viewportCenter
+    return offset.Magnitude <= AIM_CONFIG.FOV
+        and targetHasLineOfSight(camera, character, part)
+end
+
 local function getVisibleAimPart(camera, character, viewportCenter)
-    local candidates = {}
+    -- Ưu tiên Head ổn định; chỉ chuyển sang thân khi Head bị che/không tồn tại.
     for _, partName in ipairs({ "Head", "UpperTorso", "Torso", "HumanoidRootPart" }) do
-        local candidate = character:FindFirstChild(partName)
-        if candidate then table.insert(candidates, candidate) end
-    end
-    for _, part in ipairs(candidates) do
-        if part and part:IsA("BasePart") then
-            local screenPoint, onScreen = camera:WorldToViewportPoint(part.Position)
-            if onScreen and screenPoint.Z > 0 then
-                local offset = Vector2.new(screenPoint.X, screenPoint.Y) - viewportCenter
-                if offset.Magnitude <= AIM_CONFIG.FOV and targetHasLineOfSight(camera, character, part) then
-                    return part
-                end
-            end
+        local part = character:FindFirstChild(partName)
+        if part and part:IsA("BasePart") and isAimPartInFOV(camera, character, part, viewportCenter) then
+            return part
         end
     end
     return nil
 end
 
+local function getAimCandidate(player, camera, viewportCenter, myRoot)
+    if not player or player == LocalPlayer or isAimSameTeam(player) then return nil end
+    local character = player.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    if not character or not humanoid or humanoid.Health <= 0 or not root then return nil end
+
+    local worldDistance = (root.Position - myRoot.Position).Magnitude
+    if worldDistance > AIM_CONFIG.MaxDistance then return nil end
+
+    local part = getVisibleAimPart(camera, character, viewportCenter)
+    if not part then return nil end
+    return part, worldDistance
+end
+
 local function findBestAimTarget()
     local camera = workspace.CurrentCamera
     local myRoot = getHRP()
-    if not camera or not myRoot then return nil, nil end
+    if not camera or not myRoot then return nil, nil, math.huge end
 
     local viewport = camera.ViewportSize
     local center = Vector2.new(viewport.X * 0.5, viewport.Y * 0.5)
     local bestPlayer, bestPart, bestDistance = nil, nil, math.huge
 
     for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer then
-            local character = player.Character
-            local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-            local root = character and character:FindFirstChild("HumanoidRootPart")
-            local sameTeam = AIM_CONFIG.IgnoreTeam
-                and LocalPlayer.Team ~= nil and player.Team ~= nil
-                and player.Team == LocalPlayer.Team
-
-            if character and humanoid and humanoid.Health > 0 and root and not sameTeam then
-                local part = getVisibleAimPart(camera, character, center)
-                if part then
-                    local worldDistance = (root.Position - myRoot.Position).Magnitude
-                    -- Ưu tiên người chơi gần nhất trong FOV, không chọn người xa chỉ vì gần tâm hơn.
-                    if worldDistance < bestDistance then
-                        bestDistance = worldDistance
-                        bestPlayer = player
-                        bestPart = part
-                    end
-                end
-            end
+        local part, worldDistance = getAimCandidate(player, camera, center, myRoot)
+        if part and worldDistance < bestDistance then
+            bestPlayer, bestPart, bestDistance = player, part, worldDistance
         end
     end
-    return bestPlayer, bestPart
+    return bestPlayer, bestPart, bestDistance
 end
 
 local function updateAimCircle()
     if not AimAssist.circle then return end
-    local diameter = math.floor(AIM_CONFIG.FOV * 2)
-    AimAssist.circle.Size = UDim2.fromOffset(diameter, diameter)
+    AimAssist.circle.Size = UDim2.fromOffset(math.floor(AIM_CONFIG.FOV * 2), math.floor(AIM_CONFIG.FOV * 2))
     local camera = workspace.CurrentCamera
     if camera then
         local viewport = camera.ViewportSize
@@ -1339,6 +1428,79 @@ aimCircleStroke.Parent = aimCircle
 AimAssist.circle = aimCircle
 AimAssist.circleStroke = aimCircleStroke
 
+-- Tia Aim độc lập với Player ESP: chỉ vẽ tới đối thủ trong tầm, FOV và tầm nhìn.
+local aimTracerLayer = Instance.new("Frame")
+aimTracerLayer.Name = "AimTracerLayer"
+aimTracerLayer.BackgroundTransparency = 1
+aimTracerLayer.Size = UDim2.fromScale(1, 1)
+aimTracerLayer.Visible = false
+aimTracerLayer.Active = false
+aimTracerLayer.ZIndex = 3
+aimTracerLayer.Parent = screenGui
+AimAssist.tracerLayer = aimTracerLayer
+
+local function getAimTracer(player)
+    local line = AimAssist.tracers[player]
+    if line and line.Parent then return line end
+    line = Instance.new("Frame")
+    line.Name = "AimTracer_" .. tostring(player.UserId)
+    line.AnchorPoint = Vector2.new(0, 0.5)
+    line.BackgroundColor3 = Color3.fromRGB(70, 180, 255)
+    line.BackgroundTransparency = 0.35
+    line.BorderSizePixel = 0
+    line.Size = UDim2.fromOffset(0, 2)
+    line.Visible = false
+    line.Active = false
+    line.ZIndex = 3
+    line.Parent = aimTracerLayer
+    Instance.new("UICorner", line).CornerRadius = UDim.new(1, 0)
+    AimAssist.tracers[player] = line
+    return line
+end
+
+local function updateAimTracers(camera, center, myRoot)
+    if not AimAssist.tracerLayer then return end
+    AimAssist.tracerLayer.Visible = AimAssist.enabled and AIM_CONFIG.ShowTracers
+    if not AimAssist.tracerLayer.Visible or not camera or not myRoot then
+        for _, line in pairs(AimAssist.tracers) do line.Visible = false end
+        return
+    end
+
+    local activePlayers = {}
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            activePlayers[player] = true
+            local line = getAimTracer(player)
+            local part, distance = getAimCandidate(player, camera, center, myRoot)
+            if part and distance and distance <= AIM_CONFIG.MaxDistance then
+                local point, onScreen = camera:WorldToViewportPoint(part.Position)
+                if onScreen and point.Z > 0 then
+                    local delta = Vector2.new(point.X, point.Y) - center
+                    line.Position = UDim2.fromOffset(center.X, center.Y)
+                    line.Size = UDim2.fromOffset(delta.Magnitude, AimAssist.target == player and 3 or 2)
+                    line.Rotation = math.deg(math.atan2(delta.Y, delta.X))
+                    line.BackgroundColor3 = AimAssist.target == player
+                        and Color3.fromRGB(255, 205, 70)
+                        or Color3.fromRGB(70, 180, 255)
+                    line.BackgroundTransparency = AimAssist.target == player and 0.05 or 0.42
+                    line.Visible = true
+                else
+                    line.Visible = false
+                end
+            else
+                line.Visible = false
+            end
+        end
+    end
+
+    for player, line in pairs(AimAssist.tracers) do
+        if not activePlayers[player] then
+            line:Destroy()
+            AimAssist.tracers[player] = nil
+        end
+    end
+end
+
 function AimAssist:setFOV(value)
     AIM_CONFIG.FOV = clamp(tonumber(value) or AIM_CONFIG.FOV, 40, 500)
     updateAimCircle()
@@ -1348,12 +1510,22 @@ function AimAssist:setStrength(value)
     AIM_CONFIG.Strength = math.floor(clamp(tonumber(value) or AIM_CONFIG.Strength, 1, 5) + 0.5)
 end
 
+function AimAssist:setMaxDistance(value)
+    AIM_CONFIG.MaxDistance = clamp(tonumber(value) or AIM_CONFIG.MaxDistance, 50, 1000)
+end
+
+function AimAssist:setTracers(enabled)
+    AIM_CONFIG.ShowTracers = enabled == true
+    if self.tracerLayer then self.tracerLayer.Visible = self.enabled and AIM_CONFIG.ShowTracers end
+end
+
 function AimAssist:start()
-    if self.enabled then return end
+    if self.enabled then return true end
     self.enabled = true
     self.status = "Đang tìm mục tiêu trong FOV"
     self.target, self.aimPart = nil, nil
     self.nextRetarget = 0
+    self.tracerAccumulator = 0
     self.circle.Visible = true
     updateAimCircle()
     if self.circleStroke then
@@ -1365,37 +1537,72 @@ function AimAssist:start()
         self.pulseTween:Play()
     end
 
-    self.connection = RunService.RenderStepped:Connect(function(dt)
+    -- Chạy sau camera mặc định của Roblox để giảm xung đột/jitter, kể cả khi zoom/ống ngắm.
+    pcall(function() RunService:UnbindFromRenderStep(self.renderBindingName) end)
+    RunService:BindToRenderStep(self.renderBindingName, Enum.RenderPriority.Camera.Value + 1, function(dt)
         if not self.enabled then return end
         local camera = workspace.CurrentCamera
-        if not camera then
+        local myRoot = getHRP()
+        if not camera or not myRoot then
             self.target, self.aimPart = nil, nil
-            self.status = "Không tìm thấy camera"
+            self.status = "Không tìm thấy camera/nhân vật"
             return
         end
 
+        local viewport = camera.ViewportSize
+        local center = Vector2.new(viewport.X * 0.5, viewport.Y * 0.5)
         local now = os.clock()
-        if now >= self.nextRetarget then
-            self.target, self.aimPart = findBestAimTarget()
-            self.nextRetarget = now + AIM_CONFIG.RetargetInterval
-            if self.target then
-                self.status = "Đang khóa: " .. self.target.DisplayName
-            else
-                self.status = "Không có mục tiêu nhìn thấy trong vòng FOV"
+        local targetStillValid = false
+        local currentDistance = math.huge
+
+        if self.target and self.target.Parent then
+            local currentPart, dist = getAimCandidate(self.target, camera, center, myRoot)
+            if currentPart and dist then
+                targetStillValid = true
+                currentDistance = dist
+                self.aimPart = currentPart
             end
         end
 
-        local target = self.target
-        local part = self.aimPart
-        local character = target and target.Character
-        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-        if target and part and part.Parent and humanoid and humanoid.Health > 0 then
-            local desired = CFrame.lookAt(camera.CFrame.Position, part.Position)
-            local strength = AIM_RESPONSE[AIM_CONFIG.Strength] or AIM_RESPONSE[3]
-            local frameAlpha = 1 - ((1 - strength) ^ math.clamp(dt * 60, 0, 3))
-            camera.CFrame = camera.CFrame:Lerp(desired, frameAlpha)
+        if now >= self.nextRetarget then
+            local bestPlayer, bestPart, bestDistance = findBestAimTarget()
+            if not targetStillValid then
+                self.target, self.aimPart = bestPlayer, bestPart
+            elseif bestPlayer and bestPlayer ~= self.target
+                and bestDistance < currentDistance * (1 - AIM_CONFIG.SwitchMargin) then
+                -- Chỉ chuyển mục tiêu khi đối thủ mới gần hơn ít nhất 18%, hạn chế đổi qua lại.
+                self.target, self.aimPart = bestPlayer, bestPart
+            end
+            self.nextRetarget = now + AIM_CONFIG.RetargetInterval
+        end
+
+        if self.target and self.aimPart then
+            local character = self.target.Character
+            local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+            local root = character and character:FindFirstChild("HumanoidRootPart")
+            local distance = root and (root.Position - myRoot.Position).Magnitude or math.huge
+            if not humanoid or humanoid.Health <= 0 or distance > AIM_CONFIG.MaxDistance then
+                self.target, self.aimPart = nil, nil
+            else
+                local desired = CFrame.lookAt(camera.CFrame.Position, self.aimPart.Position)
+                local strength = AIM_RESPONSE[AIM_CONFIG.Strength] or AIM_RESPONSE[3]
+                local frameAlpha = 1 - ((1 - strength) ^ math.clamp(dt * 60, 0, 3))
+                camera.CFrame = camera.CFrame:Lerp(desired, frameAlpha)
+            end
+        end
+
+        if self.target then
+            self.status = string.format("Đang khóa: %s (%.0f studs)", self.target.DisplayName,
+                (self.target.Character and self.target.Character:FindFirstChild("HumanoidRootPart")
+                    and (self.target.Character.HumanoidRootPart.Position - myRoot.Position).Magnitude) or 0)
         else
-            self.target, self.aimPart = nil, nil
+            self.status = "Không có mục tiêu trong FOV/tầm bắn"
+        end
+
+        self.tracerAccumulator += dt
+        if self.tracerAccumulator >= 0.10 then
+            self.tracerAccumulator = 0
+            updateAimTracers(camera, center, myRoot)
         end
         updateAimCircle()
     end)
@@ -1406,10 +1613,7 @@ function AimAssist:stop()
     self.enabled = false
     self.target, self.aimPart = nil, nil
     self.status = "Tắt"
-    if self.connection then
-        self.connection:Disconnect()
-        self.connection = nil
-    end
+    pcall(function() RunService:UnbindFromRenderStep(self.renderBindingName) end)
     if self.pulseTween then
         self.pulseTween:Cancel()
         self.pulseTween = nil
@@ -1419,6 +1623,11 @@ function AimAssist:stop()
         self.circleStroke.Thickness = 1.5
     end
     if self.circle then self.circle.Visible = false end
+    if self.tracerLayer then self.tracerLayer.Visible = false end
+    for _, line in pairs(self.tracers) do
+        if line then line:Destroy() end
+    end
+    self.tracers = {}
 end
 
 local MainFrame = Instance.new("Frame")
@@ -1453,7 +1662,7 @@ TitleLbl.BackgroundTransparency = 1
 TitleLbl.Font = Enum.Font.GothamBold; TitleLbl.TextSize = 14
 TitleLbl.TextColor3 = Color3.fromRGB(0, 200, 255)
 TitleLbl.TextXAlignment = Enum.TextXAlignment.Left
-TitleLbl.Text = "♊ HUB GEMINI <font color='#8090a8' size='11'>| v6.5.1</font>"
+TitleLbl.Text = "♊ HUB GEMINI <font color='#8090a8' size='11'>| v6.5.2</font>"
 TitleLbl.RichText = true; TitleLbl.Parent = TopBar
 local CloseBtn = Instance.new("TextButton")
 CloseBtn.Size = UDim2.new(0, 28, 0, 28); CloseBtn.Position = UDim2.new(1, -34, 0.5, -14)
@@ -1972,14 +2181,20 @@ addSlider(aimControls, "Bán kính vòng FOV (px)", 40, 500, AIM_CONFIG.FOV, fun
 end)
 addSlider(aimControls, "Lực ghim (1 nhẹ - 5 rất mạnh)", 1, 5, AIM_CONFIG.Strength, function(v)
     AimAssist:setStrength(v)
-    local descriptions = { "Nhẹ", "Vừa nhẹ", "Cân bằng", "Mạnh", "Rất mạnh" }
+    local descriptions = { "Nhẹ - dễ rê", "Vừa nhẹ", "Cân bằng", "Mạnh", "Rất mạnh - bám sát" }
     notify("Lực ghim: " .. descriptions[AIM_CONFIG.Strength])
+end)
+addSlider(aimControls, "Khoảng cách khóa tối đa (studs)", 50, 1000, AIM_CONFIG.MaxDistance, function(v)
+    AimAssist:setMaxDistance(v)
+end)
+addToggle(aimControls, "Vẽ tia nối mục tiêu (Aim Tracer)", AIM_CONFIG.ShowTracers, function(on)
+    AimAssist:setTracers(on)
 end)
 addToggle(aimControls, "Bỏ qua đồng đội", AIM_CONFIG.IgnoreTeam, function(on)
     AIM_CONFIG.IgnoreTeam = on
 end)
 local aimInfo = Instance.new("TextLabel")
-aimInfo.Size = UDim2.new(1, -6, 0, 58)
+aimInfo.Size = UDim2.new(1, -6, 0, 72)
 aimInfo.BackgroundColor3 = Color3.fromRGB(24, 27, 38)
 aimInfo.BackgroundTransparency = 0.1
 aimInfo.BorderSizePixel = 0
@@ -1988,7 +2203,7 @@ aimInfo.TextSize = 10
 aimInfo.TextWrapped = true
 aimInfo.TextYAlignment = Enum.TextYAlignment.Center
 aimInfo.TextColor3 = Color3.fromRGB(160, 175, 195)
-aimInfo.Text = "Chỉ chọn người chơi đang hiện trong vòng FOV và có đường nhìn rõ. Ưu tiên mục tiêu gần nhất; tường/vật cản sẽ chặn khóa. Mức 5 ghim camera rất chắc nhưng không khóa chuyển động nhân vật."
+aimInfo.Text = "Chỉ khóa mục tiêu còn sống, nằm trong FOV, có đường nhìn rõ và không vượt khoảng cách tối đa. Ưu tiên đối thủ gần nhất, có chống đổi mục tiêu liên tục để giảm giật. Khi bật ống ngắm/zoom, tâm ngắm vẫn lấy theo giữa màn hình camera."
 aimInfo.Parent = aimControls
 Instance.new("UICorner", aimInfo).CornerRadius = UDim.new(0, 6)
 
@@ -2034,7 +2249,7 @@ infoText.Size = UDim2.new(1, -16, 1, -10); infoText.Position = UDim2.new(0, 8, 0
 infoText.BackgroundTransparency = 1; infoText.Font = Enum.Font.Gotham; infoText.TextSize = 11
 infoText.TextColor3 = Color3.fromRGB(160, 170, 190); infoText.TextXAlignment = Enum.TextXAlignment.Left
 infoText.TextYAlignment = Enum.TextYAlignment.Top
-infoText.Text = "• PHIÊN BẢN HIỆN TẠI: v6.5.1\n• Nhấn [Right Shift] để ẩn/hiện menu.\n• Mobile: Bấm nút tròn ♊ để mở lại.\n• Aim: FOV + kiểm tra tầm nhìn + ưu tiên người gần nhất.\n• Chọn 'Tất cả' để farm mọi loại quái.\n• Trạng thái đánh chỉ xác nhận thao tác đã gửi."
+infoText.Text = "• PHIÊN BẢN HIỆN TẠI: v6.5.2\n• Nhấn [Right Shift] để ẩn/hiện menu.\n• Mobile: Bấm nút tròn ♊ để mở lại.\n• Aim: FOV, giới hạn khoảng cách, Aim Tracer và chống giật.\n• Chọn 'Tất cả' để farm mọi loại quái.\n• Trạng thái đánh chỉ xác nhận thao tác đã gửi."
 infoText.Parent = infoCard
 -- Mở mặc định Tab Tự động bằng chuyển cảnh mượt
 switchPage("Tự động")
@@ -2138,7 +2353,7 @@ Authenticated = true
 KeyBox.Text = ""
 LoginStatus.Text = "Đăng nhập thành công"
 LoginStatus.TextColor3 = Color3.fromRGB(80, 220, 150)
-TitleLbl.Text = "♊ HUB GEMINI <font color='#f2c14e' size='11'>| PREMIUM</font> <font color='#8090a8' size='10'>v6.5.1</font>"
+TitleLbl.Text = "♊ HUB GEMINI <font color='#f2c14e' size='11'>| PREMIUM</font> <font color='#8090a8' size='10'>v6.5.2</font>"
 LoginFrame:Destroy()
 animateMain(true)
 notify("Đăng nhập Premium thành công", false)

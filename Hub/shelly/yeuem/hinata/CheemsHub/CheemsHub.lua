@@ -1,5 +1,5 @@
 -- [01] DEPENDENCIES / CÁC THƯ VIỆN NGOÀI (giữ nguyên nguồn gốc)
-loadstring(game:HttpGet("https://raw.githubusercontent.com/hdanhhub/hdanhhub/refs/heads/main/fixlagbyhdanh.lua"))()
+-- Đã bỏ loader phụ theo yêu cầu.
 loadstring(game:HttpGet("https://raw.githubusercontent.com/AnhDangNhoEm/TuanAnhIOS/refs/heads/main/koby"))()
 
 -- ==========================================
@@ -27,29 +27,24 @@ local Character = Player.Character or Player.CharacterAdded:Wait()
 local Humanoid = Character:WaitForChild("Humanoid")
 local HumanoidRootPart = Character:WaitForChild("HumanoidRootPart")
 
--- EXPLOIT CHECK
-local executor = (getexecutorname and getexecutorname()) or (identifyexecutor and identifyexecutor())
-if executor then
-    if
-        string.find(executor, "Bunni") or
-        string.find(executor, "FluxusZ") or
-        string.find(executor, "Delta") or
-        string.find(executor, "Arceus") or
-        string.find(executor, "Xeno") or
-        string.find(executor, "Swift") or
-        string.find(executor, "Awp") or
-        string.find(executor, "Volcano") or
-        string.find(executor, "Argon") or
-        string.find(executor, "Macsploit") or
-        string.find(executor, "Potassium") or
-        string.find(executor, "CodeX") or
-        string.find(executor, "Velocity") or
-        string.find(executor, "Romix") or
-        string.find(executor, "Neutron")
-    then
-        print("ok")
-    else
-        game.Players.LocalPlayer:Kick("Please use Delta Exploit or PC use volcano or Exploit paid!")
+-- EXECUTOR COMPATIBILITY
+-- Không giới hạn tên executor và không Kick người chơi chỉ vì executor không nằm trong whitelist.
+-- Một số tính năng vẫn cần API riêng của executor; chúng sẽ phụ thuộc vào mức hỗ trợ của môi trường chạy.
+local executor = "Không xác định"
+pcall(function()
+    if type(identifyexecutor) == "function" then
+        executor = tostring(identifyexecutor())
+    elseif type(getexecutorname) == "function" then
+        executor = tostring(getexecutorname())
+    end
+end)
+
+-- Fallback cho executor không cung cấp SharedEnv.
+local SharedEnv = _G
+if type(getgenv) == "function" then
+    local ok, env = pcall(getgenv)
+    if ok and type(env) == "table" then
+        SharedEnv = env
     end
 end
 
@@ -2995,16 +2990,16 @@ Tabs.Info:AddParagraph({
     ["Title"] = "Phát triển Monster",
     ["Description"] = "Kỹ Năng: Del có"
 })
-local v252 = nil
-if identifyexecutor then
-    v252 = identifyexecutor()
-elseif getexecutorname then
-    v252 = getexecutorname()
-end
-if v252 then
+local v252 = executor
+if v252 and v252 ~= "" and v252 ~= "Không xác định" then
     Tabs.Info:AddParagraph({
         ["Title"] = "Client Đang Dùng",
         ["Description"] = v252
+    })
+else
+    Tabs.Info:AddParagraph({
+        ["Title"] = "Client Đang Dùng",
+        ["Description"] = "Không xác định / không hỗ trợ nhận diện"
     })
 end
 Tabs.Info:AddParagraph({
@@ -3182,15 +3177,15 @@ Tabs.Main:AddToggle("ToggleOneHit", {
     ["Default"] = false
 }):OnChanged(function(v)
     _G.OneHitKill = v
-    getgenv().AutoClick = v
+    SharedEnv.AutoClick = v
 end)
 -- AutoClick: dùng Button1Down/Up vào giữa viewport game - KHÔNG click vào UI
-getgenv().AutoClick = false
-getgenv().ClicksPerSecond = 20
+SharedEnv.AutoClick = false
+SharedEnv.ClicksPerSecond = 20
 local _vu = game:GetService("VirtualUser")
 task.spawn(function()
-    while task.wait(1 / getgenv().ClicksPerSecond) do
-        if getgenv().AutoClick then
+    while task.wait(1 / SharedEnv.ClicksPerSecond) do
+        if SharedEnv.AutoClick then
             pcall(function()
                 local cam = workspace.CurrentCamera
                 local vp = cam.ViewportSize
@@ -10985,7 +10980,7 @@ end)
 spawn(function()
     while wait() do
         if _G.AutoRejoin then
-            getgenv().rejoin = game:GetService("CoreGui").RobloxPromptGui.promptOverlay.ChildAdded:Connect(function(p1090)
+            SharedEnv.rejoin = game:GetService("CoreGui").RobloxPromptGui.promptOverlay.ChildAdded:Connect(function(p1090)
                 if p1090.Name == "ErrorPrompt" and p1090:FindFirstChild("MessageArea") and p1090.MessageArea:FindFirstChild("ErrorFrame") then
                     game:GetService("TeleportService"):Teleport(game.PlaceId)
                 end

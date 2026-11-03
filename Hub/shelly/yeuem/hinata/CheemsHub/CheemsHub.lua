@@ -1,6 +1,66 @@
--- [01] DEPENDENCIES / CÁC THƯ VIỆN NGOÀI (giữ nguyên nguồn gốc)
--- Đã bỏ loader phụ theo yêu cầu.
-loadstring(game:HttpGet("https://raw.githubusercontent.com/AnhDangNhoEm/TuanAnhIOS/refs/heads/main/koby"))()
+-- [01] DEPENDENCIES / CÁC THƯ VIỆN NGOÀI
+-- Loader an toàn: kiểm tra từng bước, thử HttpGet rồi mới fallback sang request.
+-- Lưu ý: executor vẫn cần cung cấp loadstring để nạp thư viện Lua từ xa.
+local function LoadRemoteModule(url, label)
+    label = label or "module"
+    if type(loadstring) ~= "function" then
+        warn("[Cheems Hub] Không thể tải " .. label .. ": môi trường không cung cấp loadstring.")
+        return nil
+    end
+
+    local source, fetchError
+    if type(game.HttpGet) == "function" then
+        local ok, result = pcall(function()
+            return game:HttpGet(url)
+        end)
+        if ok and type(result) == "string" and result ~= "" then
+            source = result
+        else
+            fetchError = tostring(result)
+        end
+    end
+
+    if not source then
+        local requestFn
+        if type(request) == "function" then
+            requestFn = request
+        elseif type(http_request) == "function" then
+            requestFn = http_request
+        elseif type(syn) == "table" and type(syn.request) == "function" then
+            requestFn = syn.request
+        end
+
+        if requestFn then
+            local ok, response = pcall(requestFn, { Url = url, Method = "GET" })
+            if ok and type(response) == "table" then
+                source = response.Body or response.body
+            else
+                fetchError = tostring(response)
+            end
+        end
+    end
+
+    if type(source) ~= "string" or source == "" then
+        warn("[Cheems Hub] Không tải được " .. label .. ". Kiểm tra HTTP/request hoặc kết nối mạng. " .. tostring(fetchError or "Không có API HTTP phù hợp."))
+        return nil
+    end
+
+    local compileOK, chunk = pcall(loadstring, source)
+    if not compileOK or type(chunk) ~= "function" then
+        warn("[Cheems Hub] Không biên dịch được " .. label .. ": " .. tostring(chunk))
+        return nil
+    end
+
+    local runOK, result = pcall(chunk)
+    if not runOK then
+        warn("[Cheems Hub] Lỗi khi khởi chạy " .. label .. ": " .. tostring(result))
+        return nil
+    end
+    return result
+end
+
+-- Module phụ cũ vẫn giữ nguyên chức năng, nhưng lỗi tải không làm crash toàn bộ file.
+LoadRemoteModule("https://raw.githubusercontent.com/AnhDangNhoEm/TuanAnhIOS/refs/heads/main/koby", "module phụ Koby")
 
 -- ==========================================
 -- PHẦN A — KHỞI TẠO & DỊCH VỤ ROBLOX
@@ -24,8 +84,12 @@ local PlayerGui = Player:WaitForChild("PlayerGui", 5)
 
 -- CHARACTER
 local Character = Player.Character or Player.CharacterAdded:Wait()
-local Humanoid = Character:WaitForChild("Humanoid")
-local HumanoidRootPart = Character:WaitForChild("HumanoidRootPart")
+local Humanoid = Character:WaitForChild("Humanoid", 15)
+local HumanoidRootPart = Character:WaitForChild("HumanoidRootPart", 15)
+if not Humanoid or not HumanoidRootPart then
+    warn("[Cheems Hub] Nhân vật chưa tải đầy đủ (Humanoid/HumanoidRootPart). Hãy respawn hoặc vào lại server rồi chạy lại script.")
+    return
+end
 
 -- EXECUTOR COMPATIBILITY
 -- Không giới hạn tên executor và không Kick người chơi chỉ vì executor không nằm trong whitelist.
@@ -62,7 +126,11 @@ local Root = HumanoidRootPart
 -- PHẦN B — GIAO DIỆN (UI SHELL)
 -- LOAD UI LIBRARY (Cheems Hub)
 -- ==========================================
-Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/hdanhhub/UI/refs/heads/main/ui_BananaHub_final.lua"))()
+Library = LoadRemoteModule("https://raw.githubusercontent.com/hdanhhub/UI/refs/heads/main/ui_BananaHub_final.lua", "UI Library")
+if type(Library) ~= "table" or type(Library.CreateWindow) ~= "function" then
+    warn("[Cheems Hub] UI Library không hợp lệ hoặc không tương thích. Script dừng an toàn thay vì gọi nil tại dòng khởi tạo giao diện.")
+    return
+end
 
 Window = Library:CreateWindow({
     Title = "Cheems Hub",
@@ -11914,11 +11982,20 @@ Tabs.Main:AddDropdown("DropFishingRod", {
     ["Default"] = "Fishing Rod"
 }):OnChanged(function(v) _G.SelectedRod = v end)
 task.spawn(function()
-    local fishRep = pcall(function() return game.ReplicatedStorage:WaitForChild("FishReplicated",10) end)
-    if not fishRep then return end
-    local ok, rep = pcall(function() return game.ReplicatedStorage:WaitForChild("FishReplicated",10) end)
-    if not ok then return end
-    local fishReq = rep:WaitForChild("FishingRequest")
+    local ok, rep = pcall(function()
+        return game.ReplicatedStorage:WaitForChild("FishReplicated", 10)
+    end)
+    if not ok or not rep then
+        warn("[Cheems Hub] Không tìm thấy ReplicatedStorage.FishReplicated sau 10 giây; Auto Fishing không được khởi động.")
+        return
+    end
+    local reqOK, fishReq = pcall(function()
+        return rep:WaitForChild("FishingRequest", 10)
+    end)
+    if not reqOK or not fishReq then
+        warn("[Cheems Hub] Không tìm thấy FishingRequest; Auto Fishing không được khởi động.")
+        return
+    end
     while task.wait() do
         if _G.AutoFishing then pcall(function()
             local pl = game.Players.LocalPlayer
@@ -11930,8 +12007,10 @@ task.spawn(function()
                 if rod then char.Humanoid:EquipTool(rod); tool = rod end
             end
             if hrp and tool then
-                local srvState = pcall(function() return tool:GetAttribute("ServerState") end)
-                if srvState == "Biting" then
+                local stateOK, srvState = pcall(function()
+                    return tool:GetAttribute("ServerState")
+                end)
+                if stateOK and srvState == "Biting" then
                     fishReq:InvokeServer("Catching",true); task.wait(0.1); fishReq:InvokeServer("Catch",1)
                 else
                     fishReq:InvokeServer("StartCasting"); task.wait()
